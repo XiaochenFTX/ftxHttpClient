@@ -21,6 +21,19 @@ Http Client via libcurl
         
     });
     
+    ftx::HttpOption opt;
+    opt.userAgent = "ftxHttpClient";
+    opt.certFile = "......./ssl-cert-snakeoil.pem";
+    opt.useSSL = true;
+    opt.verifyPeer = true;
+    opt.verifyHost = false;
+    opt.useHttp2 = true;
+    opt.verbose = true;
+
+    ftx::HttpClient::RequestGetEx("https://......?a=xxx&b=YYY", opt, [](long code, std::string result){
+        
+    });
+    
     while(true)
     {
         sleep(1);

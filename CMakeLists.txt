@@ -3,7 +3,7 @@ project(ftxHttpClient)
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
 
-set(SOURCE_FILES HttpClient.cpp HttpClient.h)
+set(SOURCE_FILES HttpClient.cpp)
 
 add_library(ftxHttpClient STATIC ${SOURCE_FILES})
 

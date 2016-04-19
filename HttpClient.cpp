@@ -466,7 +466,32 @@ namespace ftx {
     std::deque<CURL*> waitRequestHandles;
     std::deque<CURL*> waitDownloadHandles;
 
-    static CURL* requestHttpHeader(const char* url)
+    static CURL* setCurlOptEx(CURL** handle, const HttpOption& opt)
+    {
+        curl_easy_setopt(*handle, CURLOPT_VERBOSE, opt.verbose);
+
+        if (!opt.userAgent.empty())
+        {
+            curl_easy_setopt(*handle, CURLOPT_USERAGENT, opt.userAgent.c_str());
+        }
+
+        if (opt.useSSL)
+        {
+            curl_easy_setopt(*handle, CURLOPT_SSL_VERIFYPEER, opt.verifyPeer);
+            curl_easy_setopt(*handle, CURLOPT_SSL_VERIFYHOST, opt.verifyHost);
+
+            if (!opt.certFile.empty())
+            {
+                curl_easy_setopt(*handle, CURLOPT_CAINFO, opt.certFile.c_str());
+            }
+
+            curl_easy_setopt(*handle, CURLOPT_PIPEWAIT, opt.useHttp2);
+        }
+
+        return *handle;
+    }
+
+    static CURL* requestHttpHeader(const char* url, const HttpOption& opt)
     {
         CURL *handle = curl_easy_init ();
         curl_easy_setopt (handle, CURLOPT_URL, url);
@@ -475,6 +500,9 @@ namespace ftx {
         curl_easy_setopt (handle, CURLOPT_HEADER, 0L);
         curl_easy_setopt (handle, CURLOPT_NOBODY, 1L);
         curl_easy_setopt (handle, CURLOPT_NOSIGNAL, 1L);
+        curl_easy_setopt (handle, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2);
+
+        setCurlOptEx(&handle, opt);
 
         if (curl_easy_perform (handle) != CURLE_OK)
         {
@@ -484,10 +512,10 @@ namespace ftx {
         return handle;
     }
 
-    static long getDownloadFileLength(const char* url)
+    static long getDownloadFileLength(const char* url, const HttpOption& opt)
     {
         double file_length = -1;
-        CURL* curl = requestHttpHeader(url);
+        CURL* curl = requestHttpHeader(url, opt);
 
         if (curl != nullptr)
         {
@@ -519,7 +547,8 @@ namespace ftx {
         return written;
     }
 
-    static void pushDownload(const std::string& url, const BlockList& blockList, const std::string& filepath, bool resume)
+    static void pushDownload(const std::string& url, const BlockList& blockList, const std::string& filepath
+            , bool resume, const HttpOption& opt)
     {
         for (size_t i = 0; i < blockList.all.size(); ++i)
         {
@@ -533,7 +562,7 @@ namespace ftx {
             sprintf(range, "%ld-%ld", start, end);
 
             DownloadBlock* block = takeDownloadBlock(curl, start, end, resume, i, filepath);
-            RequestTypeOption* opt = takeRequestOption(RequestType::HttpDownload, block);
+            RequestTypeOption* reqtype = takeRequestOption(RequestType::HttpDownload, block);
 
             curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, downloadWriteData);
             curl_easy_setopt(curl, CURLOPT_WRITEDATA, block);
@@ -541,9 +570,11 @@ namespace ftx {
             curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
             curl_easy_setopt(curl, CURLOPT_HEADER, 0L);
             curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-            curl_easy_setopt(curl, CURLOPT_PRIVATE, opt);
-//            curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
+            curl_easy_setopt(curl, CURLOPT_PRIVATE, reqtype);
             curl_easy_setopt(curl, CURLOPT_RANGE, range);
+            curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2);
+
+            setCurlOptEx(&curl, opt);
 
             waitDownloadHandles.push_back(curl);
             downloadResultTable[filepath][i] = DownloadResult::None;
@@ -571,12 +602,13 @@ namespace ftx {
 
     std::map<size_t, std::string> postParamMap;
 
-    static void pushHttpRequest(const std::string& url, size_t index, bool post, const std::string& params_str)
+    static void pushHttpRequest(const std::string& url, size_t index, bool post, const std::string& params_str
+            , const HttpOption& opt)
     {
         CURL* curl = curl_easy_init();
 
         RequestStream* stream = takeRequestStream(curl, index);
-        RequestTypeOption* opt = takeRequestOption(RequestType::HttpRequest, stream);
+        RequestTypeOption* reqtype = takeRequestOption(RequestType::HttpRequest, stream);
 
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, requestWriteData);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, stream);
@@ -584,9 +616,10 @@ namespace ftx {
         curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
         curl_easy_setopt(curl, CURLOPT_HEADER, 0L);
         curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-        curl_easy_setopt(curl, CURLOPT_PRIVATE, opt);
+        curl_easy_setopt(curl, CURLOPT_PRIVATE, reqtype);
+        curl_easy_setopt(curl, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2);
 
-//        curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
+        setCurlOptEx(&curl, opt);
 
         if (post)
         {
@@ -602,6 +635,20 @@ namespace ftx {
     }
 
     std::map<size_t, std::function<void(long, std::string)>> httpResponseMap;
+
+    // =========================================
+    static HttpOption defaultHttpOption(const std::string& url)
+    {
+        HttpOption opt;
+
+        opt.useSSL = url.substr(0, 5) == "https";
+        opt.verifyHost = opt.useSSL;
+        opt.verifyPeer = opt.useSSL;
+        opt.useHttp2 = opt.useSSL;
+        opt.userAgent = "ftxHttpClient";
+
+        return opt;
+    }
 }
 
 // ==============================================
@@ -617,6 +664,7 @@ void ftx::HttpClient::StartUp(long max_connects)
         curlm = curl_multi_init();
 
         curl_multi_setopt(curlm, CURLMOPT_MAXCONNECTS, maxConnects);
+        curl_multi_setopt(curlm, CURLMOPT_PIPELINING, CURLPIPE_MULTIPLEX);
     });
 
     std::thread http_thread([&](){
@@ -651,15 +699,22 @@ void ftx::HttpClient::Loop()
 void ftx::HttpClient::PushDownload(const std::string& url, const std::string& filepath
         , std::function<void(bool, std::string)> callback, size_t block_size, bool need_resume)
 {
+    HttpOption opt = defaultHttpOption(url);
+    PushDownloadEx(url, filepath, opt, callback, block_size, need_resume);
+}
+
+void ftx::HttpClient::PushDownloadEx(const std::string &url, const std::string &filepath, const HttpOption &opt
+        , std::function<void(bool, std::string)> callback, size_t block_size, bool need_resume)
+{
     httpTaskManager.PushToBackgroundThread([=]() {
         BlockList blockList;
 
-        auto recomputaion = [url, block_size]() -> BlockList
+        auto recomputaion = [url, block_size, opt]() -> BlockList
         {
             BlockList blockList;
             size_t block_size_byte = block_size * 1024 * 1024;
 
-            long filesize = getDownloadFileLength(url.c_str());
+            long filesize = getDownloadFileLength(url.c_str(), opt);
             long begin = 0;
             while (begin < filesize)
             {
@@ -687,7 +742,7 @@ void ftx::HttpClient::PushDownload(const std::string& url, const std::string& fi
         }
 
         //
-        pushDownload(url, blockList, filepath, need_resume);
+        pushDownload(url, blockList, filepath, need_resume, opt);
     });
 
     downloadCallbackMap[filepath] = callback;
@@ -786,7 +841,7 @@ void ftx::HttpClient::curlPerformLoop()
 
         RequestType type = opt->type;
 
-        bool success = responseCode >= 200 || responseCode < 300;
+        bool success = responseCode >= 200 && responseCode < 300;
 
         if (type == RequestType::HttpDownload)
         {
@@ -882,20 +937,34 @@ void ftx::HttpClient::curlPerformLoop()
 
 void ftx::HttpClient::RequestGet(const std::string &url, std::function<void(long, std::string)> callback)
 {
-    size_t index = newIndex();
-    httpTaskManager.PushToBackgroundThread([=](){
-        pushHttpRequest(url, index, false, "");
-    });
-
-    httpResponseMap[index] = callback;
+    HttpOption opt = defaultHttpOption(url);
+    RequestGetEx(url, opt, callback);
 }
 
 void ftx::HttpClient::RequestPost(const std::string &url, const std::string &params_str
         , std::function<void(long, std::string)> callback)
 {
+    HttpOption opt = defaultHttpOption(url);
+    RequestPostEx(url, opt, params_str, callback);
+}
+
+void ftx::HttpClient::RequestGetEx(const std::string &url, const HttpOption &opt
+        , std::function<void(long, std::string)> callback)
+{
     size_t index = newIndex();
     httpTaskManager.PushToBackgroundThread([=](){
-        pushHttpRequest(url, index, true, params_str);
+        pushHttpRequest(url, index, false, "", opt);
+    });
+
+    httpResponseMap[index] = callback;
+}
+
+void ftx::HttpClient::RequestPostEx(const std::string &url, const HttpOption &opt, const std::string &params_str
+        , std::function<void(long, std::string)> callback)
+{
+    size_t index = newIndex();
+    httpTaskManager.PushToBackgroundThread([=](){
+        pushHttpRequest(url, index, true, params_str, opt);
     });
 
     httpResponseMap[index] = callback;

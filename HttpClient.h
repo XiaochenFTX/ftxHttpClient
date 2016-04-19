@@ -25,6 +25,18 @@ private:
     std::map<std::string, std::string> _params;
 };
 
+//
+struct HttpOption
+{
+    std::string userAgent;
+    std::string certFile;
+    bool verbose;
+    bool useSSL;
+    bool verifyPeer;
+    bool verifyHost;
+    bool useHttp2;
+};
+
 class HttpClient {
 public:
     static void StartUp(long max_connects = 20);
@@ -32,6 +44,10 @@ public:
     static void Loop();
 
     static void PushDownload(const std::string& url, const std::string& filepath
+            , std::function<void(bool, std::string)> callback = nullptr /* void (bool isSucceed, string filepath) */
+            , size_t block_size = 20 /* MB */
+            , bool need_resume = true);
+    static void PushDownloadEx(const std::string& url, const std::string& filepath, const HttpOption& opt
             , std::function<void(bool, std::string)> callback = nullptr /* void (bool isSucceed, string filepath) */
             , size_t block_size = 20 /* MB */
             , bool need_resume = true);
@@ -49,6 +65,11 @@ public:
     static void RequestGet(const std::string& url, std::function<void(long code, std::string data)> callback = nullptr);
     static void RequestPost(const std::string& url, const std::string& params_str = ""
             , std::function<void(long code, std::string data)> callback = nullptr);
+
+    static void RequestGetEx(const std::string& url, const HttpOption& opt
+            , std::function<void(long code, std::string data)> callback = nullptr);
+    static void RequestPostEx(const std::string& url, const HttpOption& opt
+            , const std::string& params_str = "", std::function<void(long code, std::string data)> callback = nullptr);
 
 private:
     static void curlPerformLoop();
